@@ -1,0 +1,57 @@
+{
+  "notes": "PHP2Shell (CVE-2026-109618 and CVE-2026-109619), hand-edited from the 2026-10-21 advisories. php-radar reads this file at run time, so a new fix or distro build is an edit here and no code change. JSON has no comments, so every entry carries its own notes field.",
+  "fixed": {
+    "8.5": {"micro": 12, "notes": "Upstream fix, released 2026-10-21 as 8.5.12."},
+    "8.4": {"micro": 27, "notes": "Upstream fix, released 2026-10-21 as 8.4.27."},
+    "8.3": {"micro": 36, "notes": "Upstream fix, released 2026-10-21 as 8.3.36."},
+    "8.2": {"micro": 35, "notes": "Upstream fix, released 2026-10-21 as 8.2.35."}
+  },
+  "eol": {
+    "through": "8.1",
+    "notes": "8.1, 8.0, 7.4 and every older branch are end of life, and upstream shipped no PHP2Shell fix for any of them. A distro or vendor that patched one anyway goes in backports, which the grader checks before this rule."
+  },
+  "backports": [
+    {
+      "distro": "ubuntu",
+      "build": "8.1.2-1ubuntu2.28",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "Ubuntu 22.04 LTS php8.1, fixed in USN-8948-1 and USN-8948-2. Ubuntu patched its own 8.1.2 base, so the 8.1.2 that php -v prints says nothing about the fix. Later revisions of the same series count as patched."
+    },
+    {
+      "distro": "debian",
+      "build": "8.4.27-1~deb13u1",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "Debian 13 (trixie) php8.4, fixed in DSA-6574-1. Later revisions of the same series count as patched."
+    },
+    {
+      "distro": "debian",
+      "build": "8.2.35-1~deb12u1",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "Debian 12 (bookworm) php8.2, fixed in DLA-4848-1, an LTS advisory. Later revisions of the same series count as patched."
+    },
+    {
+      "distro": "alpine",
+      "build": "8.3.36-r0",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "Alpine 3.24 php83, listed as fixed in the v3.24 community secdb. Alpine 3.23 and older list no fix, so they are not here."
+    },
+    {
+      "distro": "alpine",
+      "build": "8.4.27-r0",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "Alpine 3.24 php84, listed as fixed in the v3.24 community secdb."
+    },
+    {
+      "distro": "alpine",
+      "build": "8.5.12-r0",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "Alpine 3.24 php85, listed as fixed in the v3.24 community secdb."
+    },
+    {
+      "distro": "suse",
+      "build": "8.3.36",
+      "verdict": "LIKELY_PATCHED",
+      "notes": "SUSE Linux Enterprise 15 SP7 php8. SUSE released it as 8.3.36-150700.3.24.1. The bare version covers every release built from 8.3.36 and any later 8.3 point release."
+    }
+  ]
+}
