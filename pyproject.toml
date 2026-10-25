@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "php-radar"
+version = "0.1.0"
+description = "Finds PHP installs and grades them against PHP2Shell (CVE-2026-109618, CVE-2026-109619) without triggering the bug."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "AbacusNin" }]
+requires-python = ">=3.9"
+keywords = ["php", "php2shell", "vulnerability", "scanner", "security", "inventory", "sarif"]
+# No License classifier: the license expression above replaces it, and setuptools refuses both.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
+# Standard library only. boto3 is the one exception and lives in the aws extra.
+dependencies = []
+
+[project.optional-dependencies]
+aws = ["boto3"]
+
+[project.urls]
+Homepage = "https://github.com/AbacusNin/php-radar"
+Issues = "https://github.com/AbacusNin/php-radar/issues"
+
+[project.scripts]
+php-radar = "php_radar.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["php_radar*"]
+
+# php_radar/data/php2shell.json holds the vulnerability matrix and has to travel with the wheel.
+[tool.setuptools.package-data]
+php_radar = ["data/*.json"]
+
+# Lets a bare pytest import php_radar from a fresh checkout, no editable install.
+[tool.pytest.ini_options]
+pythonpath = ["."]
