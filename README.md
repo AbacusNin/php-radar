@@ -15,16 +15,16 @@ whether anything is exposed.
 Python 3.9 or later. The core uses only the standard library.
 
 ```
-pip install git+https://github.com/AbacusNin/php-radar.git
+pip install php-radar
 ```
 
 For the AWS source, add the aws extra:
 
 ```
-pip install "php-radar[aws] @ git+https://github.com/AbacusNin/php-radar.git"
+pip install "php-radar[aws]"
 ```
 
-From a clone, `pip install .` (or `pip install ".[aws]"`) does the same, and
+Or install from a clone with `pip install .` (or `pip install ".[aws]"`), and
 `python -m php_radar` runs it without installing.
 
 ## Usage
