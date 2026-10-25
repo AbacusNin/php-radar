@@ -1,0 +1,12 @@
+{
+    "name": "acme/site",
+    "require": {
+        "php": ">=8.2",
+        "ext-mbstring": "*"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.12"
+        }
+    }
+}
