@@ -11,16 +11,16 @@ php-radar itself exits 4 with its traceback on stderr, and Ctrl-C exits 130. Lef
 would exit 1, which reads as an exposed asset.
 
 Credentials come from the environment and the standard chains and never from a flag. Notes about
-how far a run reached, such as the regions read or the targets a sweep left out, close a console
-report. They go to stderr as well, except when that report is printed on stdout. So stdout stays
-one document with json or sarif.
+how far a run reached, such as the regions, projects, or subscriptions a cloud run read or the
+targets a sweep left out, close a console report. They go to stderr as well, except when that
+report is printed on stdout. So stdout stays one document with json or sarif.
 """
 import argparse
 import json
 import os
 import sys
 import traceback
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 from php_radar.knowledge import DATA_PATH, Matrix, MatrixError, grade, load_matrix
 from php_radar.model import Asset, AssetInventory, Evidence, Source, Verdict
@@ -28,7 +28,7 @@ from php_radar.model import Asset, AssetInventory, Evidence, Source, Verdict
 # at the keyboard, and they follow the same rule.
 from php_radar.report import _plain, render_console, render_json, render_sarif
 from php_radar.scope import ScopeError, guard, parse_scope
-from php_radar.sources.cloud import get_cloud_source
+from php_radar.sources.cloud import get_cloud_source, is_subscription_id
 from php_radar.sources.github import scan_github_org
 from php_radar.sources.host import inspect_local, inspect_ssh
 from php_radar.sources.network import sweep
@@ -66,11 +66,27 @@ def _whole(text: str) -> int:
     return number
 
 
-def _region(text: str) -> str:
-    name = text.strip()
-    if not name:
-        raise argparse.ArgumentTypeError("a region name cannot be empty")
-    return name
+def _nonempty(what: str) -> Callable[[str], str]:
+    # The type of a name that must be there, such as a region or a project. what fills the message.
+    def check(text: str) -> str:
+        name = text.strip()
+        if not name:
+            raise argparse.ArgumentTypeError(f"{what} cannot be empty")
+        return name
+
+    return check
+
+
+def _subscription(text: str) -> str:
+    ident = text.strip()
+    if not ident:
+        # A run that names no subscription reads every one the credential can list.
+        raise argparse.ArgumentTypeError("a subscription id cannot be empty, and an empty one "
+                                         "would read every subscription the credential can list")
+    if not is_subscription_id(ident):
+        raise argparse.ArgumentTypeError(f"{text!r} is not a subscription id, which is a GUID. If "
+                                         "it is the name of a subscription, use its id instead")
+    return ident.lower()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -90,7 +106,7 @@ def _parser() -> argparse.ArgumentParser:
                "  1  at least one asset grades EXPOSED\n"
                "  2  a usage or scope error\n"
                "  3  no asset grades EXPOSED, but a read was skipped (an unreadable file, a\n"
-               "     failed GitHub or AWS call, a host that could not be inspected), so the\n"
+               "     failed GitHub or cloud call, a host that could not be inspected), so the\n"
                "     scan is incomplete\n"
                "  4  an unexpected error in php-radar itself, with its traceback on stderr\n"
                "\n"
@@ -102,7 +118,9 @@ def _parser() -> argparse.ArgumentParser:
                "rows show what was reached.\n"
                "\n"
                "Credentials are never taken from a flag. repo reads GITHUB_TOKEN from the\n"
-               "environment, and cloud uses the standard AWS credential chain.")
+               "environment, and cloud uses the standard credential chain of its provider:\n"
+               "the AWS default chain, Application Default Credentials for GCP, or\n"
+               "DefaultAzureCredential for Azure.")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     def command(name: str, **kwargs) -> argparse.ArgumentParser:
@@ -140,10 +158,20 @@ def _parser() -> argparse.ArgumentParser:
     host.set_defaults(handler=_host)
 
     cloud = command("cloud", help="list the PHP an account runs, using read-only calls")
-    cloud.add_argument("--provider", required=True, metavar="NAME", help="the cloud to read: aws")
-    cloud.add_argument("--region", action="append", type=_region, metavar="NAME",
-                       help="a region to read, repeated for several. Without it the session's "
-                            "own region is read")
+    cloud.add_argument("--provider", required=True, metavar="NAME",
+                       help="the cloud to read: aws, gcp, or azure")
+    cloud.add_argument("--region", action="append", type=_nonempty("a region name"),
+                       metavar="NAME",
+                       help="aws: a region to read, repeated for several. Without it the "
+                            "session's own region is read")
+    cloud.add_argument("--project", action="append", type=_nonempty("a project id"),
+                       metavar="ID",
+                       help="gcp: a project to read, repeated for several. Without it the "
+                            "project of the Application Default Credentials is read")
+    cloud.add_argument("--subscription", action="append", type=_subscription, metavar="ID",
+                       help="azure: a subscription to read, given by its id (a GUID) and "
+                            "repeated for several. Without it AZURE_SUBSCRIPTION_ID is read when "
+                            "it is set, and otherwise every subscription the credential can list")
     cloud.set_defaults(handler=_cloud)
     return parser
 
@@ -223,30 +251,69 @@ def _host(args: argparse.Namespace) -> _Run:
     return _Run([ev], [])
 
 
+class _Scope(NamedTuple):
+    flag: str  # the option that names it, without its dashes. argparse keeps the values under it
+    attr: str  # the attribute of the source that holds what the run reads
+    label: str  # what a note calls what was read
+    none: str  # the note for a run that read nothing
+
+
+_SCOPES = {
+    "aws": _Scope("region", "regions", "AWS regions",
+                  "no AWS region is configured, so no region was read. Pass --region or set "
+                  "AWS_DEFAULT_REGION."),
+    "gcp": _Scope("project", "projects", "GCP projects",
+                  "no GCP project is configured, so no project was read. Pass --project or set "
+                  "GOOGLE_CLOUD_PROJECT."),
+    "azure": _Scope("subscription", "subscriptions", "Azure subscriptions",
+                    "no Azure subscription was named, and none could be listed, so none was "
+                    "read. Pass --subscription or set AZURE_SUBSCRIPTION_ID."),
+}
+
+
 def _cloud(args: argparse.Namespace) -> _Run:
+    scope = _SCOPES.get(args.provider)  # an unknown provider is for get_cloud_source to refuse
+    if scope is not None:
+        for owner, other in _SCOPES.items():
+            # The flag of another provider would be ignored, and the run would reach further than
+            # the person who typed it meant.
+            if other is not scope and getattr(args, other.flag):
+                raise _Usage(f"--{other.flag} is for --provider {owner}")
     try:
         source = get_cloud_source(args.provider)
     except (RuntimeError, ValueError) as exc:
-        # RuntimeError: the extra is missing or no session starts. ValueError: no such provider.
+        # RuntimeError: the extra is missing or no session or credentials start. ValueError: no
+        # such provider.
         raise _Usage(str(exc)) from exc
-    if args.region:
-        # get_cloud_source takes no region, and inventory() reads this attribute on each call. A
-        # region named twice would be read twice.
-        source.regions = tuple(dict.fromkeys(args.region))
-    return _Run(source.inventory(), _regions_note(source, bool(args.region)))
+    chosen = getattr(args, scope.flag) if scope is not None else None
+    if chosen:
+        # get_cloud_source takes no scope, and inventory() reads this attribute on each call. A
+        # name given twice would be read twice.
+        setattr(source, scope.attr, tuple(dict.fromkeys(chosen)))
+    # A source that starts with no scope lists its own inside inventory(). What it reads then is
+    # everything the credential can list, and the note says so. So this is checked before the read.
+    listed = scope is not None and not getattr(source, scope.attr, None)
+    return _Run(source.inventory(), _scope_note(source, bool(chosen), listed))
 
 
-def _regions_note(source: object, chosen: bool) -> list[str]:
-    # One region is read by default, so a clean report says nothing about the others.
-    regions = getattr(source, "regions", None)
-    if regions is None:
-        return []
-    names = [name for name in regions if name]
-    if not names:
-        return ["no AWS region is configured, so no region was read. Pass --region or set "
-                "AWS_DEFAULT_REGION."]
-    note = f"AWS regions read: {', '.join(names)}."
-    return [note if chosen else note + " Only these are covered. Repeat --region to read more."]
+def _scope_note(source: object, chosen: bool, listed: bool) -> list[str]:
+    # Called after inventory(), because a source that was given no subscription lists them there.
+    # One scope is read by default, so a clean report says nothing about the others. A scope the
+    # source listed itself is the exception, since nothing is left out of it.
+    for scope in _SCOPES.values():
+        found = getattr(source, scope.attr, None)
+        if found is None:
+            continue
+        names = [name for name in found if name]
+        if not names:
+            return [scope.none]
+        note = f"{scope.label} read: {', '.join(names)}."
+        if listed:
+            note += f" That is every {scope.flag} the credential can list."
+        elif not chosen:
+            note += f" Only these are covered. Repeat --{scope.flag} to read more."
+        return [note]
+    return []
 
 
 def _is_skipped(ev: Evidence) -> bool:

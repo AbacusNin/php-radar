@@ -45,45 +45,26 @@ with PHP inside it, an image whose tags never say php. An ECR tag is a label som
 image behind it may never run, and a tag that can be pushed again may point at another build
 tomorrow. boto3's own timeouts and retries apply.
 """
-import string
 from collections import Counter
 from typing import Any, Callable, Iterable, Iterator, NamedTuple, Optional, Union
 
 from php_radar.model import Evidence, Sapi, Source
-from php_radar.versions import PhpVersion, parse_branch
-# The grader decides what a distro revision and a pre-release are. The network source tells a name
-# from an address, and the repo scan reads a SAPI out of an image tag. Using theirs keeps a cloud
-# read in step with the other sources.
-from php_radar.knowledge import _is_prerelease, _is_revision
+from php_radar.sources.cloud._common import (
+    _BRANCH, _MAX_MISSES, _MAX_PAGES, _MAX_TAG, _NAME, _PATH, _Stop, _dns, _fits, _gap, _number,
+    _repo_gap, _tag_note, _tag_version, _unread, _where)
+# The network source tells a name from an address, and the repo scan reads a SAPI out of an image
+# tag. Using theirs keeps a cloud read in step with the other sources.
 from php_radar.sources.network import _identity
 from php_radar.sources.repo import _sapi
-
-# Pages read from one listing. A listing past this is cut and says so, which also ends a service
-# that keeps handing back a token.
-_MAX_PAGES = 200
 
 # The page size asked of ECR, its largest. Beanstalk and Lambda choose their own.
 _PAGE = 1000
 
-# Repositories in a row whose images cannot be listed before the ECR read stops.
-_MAX_MISSES = 3
-
-# The longest value of each kind taken from an answer. A DNS name is 253 characters at most, a tag
-# 128, and an ARN 2048. An AWS error code is far shorter than 64.
-_MAX_DNS = 253
-_MAX_TAG = 128
+# The longest value of each kind taken from an answer. An ARN is 2048 characters at most. An AWS
+# error code is far shorter than 64.
 _MAX_ARN = 2048
 _MAX_CODE = 64
 _MAX_TEXT = 256
-
-_NAME = frozenset(string.ascii_letters + string.digits + "-._")  # DNS names, layers, tags, codes
-_PATH = _NAME | frozenset("/")  # repository names and the URIs docker pulls from
-
-# PHP 5 is the oldest major worth reading and 9 the newest accepted, so an app version such as
-# 2.1.0 in a repository called php is not taken for PHP.
-_MAJORS = range(5, 10)
-
-_BRANCH = "{} names only the PHP branch, so the build is not read"
 
 # What an entry of each list lacks when it cannot be read. The row that counts the entries says so,
 # because a dropped environment is a puzzle otherwise. A non-ASCII application name is one cause.
@@ -95,19 +76,11 @@ _KNOWN = {"NoCredentialsError": "no AWS credentials were found",
           "NoRegionError": "no AWS region is configured"}
 
 
-class _Stop(Exception):
-    """A read that cannot go on. The message is the reason to record."""
-
-
 class _Repo(NamedTuple):
     arn: str
     name: str
     uri: str  # what docker pulls from, or the name when the answer gave no usable URI
     official: bool  # php is the last part of the name, as in a mirror of the official image
-
-
-def _fits(value: object, chars: frozenset, limit: int) -> bool:
-    return isinstance(value, str) and 0 < len(value) <= limit and chars.issuperset(value)
 
 
 def _arn(value: object, spaces: bool = False) -> Optional[str]:
@@ -117,10 +90,6 @@ def _arn(value: object, spaces: bool = False) -> Optional[str]:
     ok = (isinstance(value, str) and value.startswith("arn:") and len(value) <= _MAX_ARN
           and value.isascii() and value.isprintable() and (spaces or " " not in value))
     return value if ok else None
-
-
-def _dns(value: object) -> Optional[str]:
-    return value if _fits(value, _NAME, _MAX_DNS) and value[0] not in ".-" else None
 
 
 def _printable(value: str) -> bool:
@@ -170,33 +139,6 @@ def _listing(call: Callable[..., Any], items: str, into: str, out_of: str,
             raise _Stop("the answer is not understood")
         params[into] = after
     raise _Stop(f"the list runs past {_MAX_PAGES} pages")
-
-
-def _where(service: str, region: Optional[str]) -> str:
-    return f"aws {service} {region}" if region else f"aws {service}"
-
-
-def _gap(service: str, region: Optional[str], why: str) -> Evidence:
-    # The repo scan marks a row about something it passed over with kind skipped. The same mark
-    # lets a caller count the gaps of every source one way.
-    return Evidence(Source.CLOUD, _where(service, region), None, Sapi.UNKNOWN,
-                    {"service": service, "kind": "skipped"}, "not inventoried: " + why)
-
-
-def _unread(service: str, region: Optional[str], count: int, what: str) -> Evidence:
-    entries = "entry" if count == 1 else "entries"
-    return _gap(service, region,
-                f"{count} {entries} in the list of {what} could not be read ({_UNREAD[what]})")
-
-
-def _number(word: str) -> Optional[str]:
-    """X.Y.Z or X.Y when the word is exactly that and could be PHP, else None."""
-    release = PhpVersion.parse(word)
-    if release is not None:
-        parts = None if release.suffix else (release.major, release.minor, release.micro)
-    else:
-        parts = parse_branch(word)
-    return ".".join(map(str, parts)) if parts and parts[0] in _MAJORS else None
 
 
 # --- Elastic Beanstalk ---
@@ -292,39 +234,6 @@ def _lambda(client: Any, odd: Counter) -> Iterator[Evidence]:
 
 # --- ECR ---
 
-def _number_word(words: list[str], official: bool) -> Optional[tuple[int, str]]:
-    """(index, text) of the word that should hold the PHP number in a tag, or None.
-
-    Two shapes name PHP. The word php can be followed by the number (php-8.3.12), or a word can
-    start with php and a digit and hold the number itself (php8.3.12). In a repository called php,
-    a tag names PHP by starting with the number, as the official image's tags do.
-    """
-    for at, word in enumerate(words):
-        if word == "php" and at + 1 < len(words):
-            return at + 1, words[at + 1]
-        if word.startswith("php") and word[3:4].isdigit():
-            return at, word[3:]
-    return (0, words[0]) if official else None
-
-
-def _tag_version(tag: str, official: bool) -> Optional[str]:
-    """The PHP version an image tag names, X.Y.Z or X.Y, or None when it names none.
-
-    A full number stands unless what follows it reads as a distro revision or a pre-release, by
-    the grader's own test. Then the tag gives the branch alone. The number could be the upstream
-    one of a build with fixes of its own.
-    """
-    words = tag.lower().replace("_", "-").split("-")
-    found = _number_word(words, official)
-    number = _number(found[1]) if found else None
-    if found and number is not None and number.count(".") == 2:
-        # The number parsed on its own, so it parses with a suffix after it too.
-        release = PhpVersion.parse("-".join([found[1]] + words[found[0] + 1:]))
-        if _is_revision(release) or _is_prerelease(release):
-            number = number.rpartition(".")[0]
-    return number
-
-
 def _repository(item: object) -> Optional[_Repo]:
     if not isinstance(item, dict):
         return None
@@ -341,18 +250,8 @@ def _image(repo: _Repo, tag: str) -> Optional[Evidence]:
     if number is None:
         return None
     signals = {"resource": repo.arn, "service": "ecr", "php_present": "true"}
-    full = number.count(".") == 2
-    note = "version read from the image tag" if full else _BRANCH.format("the tag")
-    return Evidence(Source.CLOUD, f"{repo.uri}:{tag}", number, _sapi(tag.lower()), signals, note)
-
-
-def _repo_gap(repo: _Repo, why: str, saw_php: bool) -> Evidence:
-    signals = {"resource": repo.arn, "service": "ecr", "kind": "skipped"}
-    if saw_php:
-        # The part not read may hold an older build, so the part that was read cannot clear it.
-        signals["php_present"] = "true"
-    return Evidence(Source.CLOUD, repo.uri, None, Sapi.UNKNOWN, signals,
-                    "not fully inventoried: " + why)
+    return Evidence(Source.CLOUD, f"{repo.uri}:{tag}", number, _sapi(tag.lower()), signals,
+                    _tag_note(number))
 
 
 def _ecr(client: Any, odd: Counter) -> Iterator[Evidence]:
@@ -378,7 +277,7 @@ def _ecr(client: Any, odd: Counter) -> Iterator[Evidence]:
                     yield ev
         except _Stop as stop:
             misses += 1
-            yield _repo_gap(repo, str(stop), saw_php)
+            yield _repo_gap("ecr", repo.arn, repo.uri, str(stop), saw_php)
             if misses == _MAX_MISSES:
                 raise _Stop(f"{_MAX_MISSES} repositories in a row could not be read") from None
         else:
@@ -424,12 +323,14 @@ class AwsSource:
     def _read(self, service: str, region: Optional[str],
               read: Callable[[Any, Counter], Iterator[Evidence]]) -> list[Evidence]:
         found: list[Evidence] = []
+        where = _where("aws", service, region)
         odd: Counter = Counter()  # entries that could not be read, by the list they came from
         try:
             for ev in read(self._client(service, region), odd):
                 found.append(ev)
         except _Stop as stop:
-            found.append(_gap(service, region, str(stop)))
+            found.append(_gap(service, where, str(stop)))
         # After the stop as well, so a count is never lost to a failure that comes later.
-        found.extend(_unread(service, region, count, what) for what, count in odd.items())
+        found.extend(_unread(service, where, count, what, _UNREAD[what])
+                     for what, count in odd.items())
         return found

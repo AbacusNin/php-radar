@@ -320,7 +320,7 @@ def test_beanstalk_php_platform_becomes_evidence(fake_session):
 
 
 def test_missing_extra_gives_clear_error():
-    with pytest.raises(RuntimeError, match="pip install php-radar\\[aws\\]"):
+    with pytest.raises(RuntimeError, match='pip install "php-radar\\[aws\\]"'):
         get_cloud_source("aws", _boto3=None)
 
 
@@ -329,14 +329,14 @@ def test_missing_extra_gives_clear_error():
 def test_a_real_import_that_fails_gives_the_same_error(monkeypatch):
     # None in sys.modules makes an import of boto3 raise ImportError, installed or not.
     monkeypatch.setitem(sys.modules, "boto3", None)
-    with pytest.raises(RuntimeError, match="pip install php-radar\\[aws\\]") as caught:
+    with pytest.raises(RuntimeError, match='pip install "php-radar\\[aws\\]"') as caught:
         get_cloud_source("aws")
     assert "boto3" in str(caught.value)
 
 
 @pytest.mark.skipif(importlib.util.find_spec("boto3") is not None, reason="boto3 is installed")
 def test_boto3_is_absent_here_and_the_plain_call_says_so():
-    with pytest.raises(RuntimeError, match="pip install php-radar\\[aws\\]"):
+    with pytest.raises(RuntimeError, match='pip install "php-radar\\[aws\\]"'):
         get_cloud_source("aws")
 
 
@@ -373,7 +373,7 @@ def test_a_boto3_that_imports_is_used_when_nothing_is_injected(fake_session, mon
 
 def test_none_still_means_not_installed_when_a_boto3_could_be_imported(fake_session, monkeypatch):
     monkeypatch.setitem(sys.modules, "boto3", FakeBoto3(fake_session))
-    with pytest.raises(RuntimeError, match="pip install php-radar\\[aws\\]"):
+    with pytest.raises(RuntimeError, match='pip install "php-radar\\[aws\\]"'):
         get_cloud_source("aws", _boto3=None)
 
 
@@ -386,8 +386,8 @@ def test_a_session_that_cannot_start_is_a_runtime_error_without_its_message():
 
 
 def test_an_unknown_provider_is_refused_and_the_known_ones_are_named():
-    with pytest.raises(ValueError, match="aws"):
-        get_cloud_source("gcp")
+    with pytest.raises(ValueError, match="aws, gcp, azure"):
+        get_cloud_source("bogus")
 
 
 def test_the_source_satisfies_the_protocol(fake_session):
@@ -1506,7 +1506,7 @@ def test_the_modules_are_standard_library_only_and_boto3_is_imported_in_one_func
     pkg = ast.parse(source_of(cloud), feature_version=(3, 9))
     mod = ast.parse(source_of(aws), feature_version=(3, 9))
     assert {m for m, _ in imports_of(mod)} <= {"collections", "string", "typing", "php_radar"}
-    assert {m for m, inside in imports_of(pkg) if not inside} <= {"typing", "php_radar"}
+    assert {m for m, inside in imports_of(pkg) if not inside} <= {"os", "typing", "php_radar"}
     lazy = [(m, inside) for m, inside in imports_of(pkg) if m in ("boto3", "botocore")]
     assert lazy == [("boto3", True)]
 

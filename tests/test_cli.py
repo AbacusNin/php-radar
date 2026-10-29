@@ -173,6 +173,31 @@ class FakeSource:
         return list(self.found)
 
 
+class FakeGcp:
+    """Like GcpSource, it keeps the projects it reads in a plain attribute and has no regions."""
+
+    def __init__(self, found=(), projects=("my-project",)):
+        self.found = list(found)
+        self.projects = projects
+
+    def inventory(self):
+        return list(self.found)
+
+
+class FakeAzure:
+    """Like AzureSource, it reads the subscriptions it was given. With none, it lists them during
+    inventory(), so only a note made after the read can name them."""
+
+    def __init__(self, found=(), subscriptions=(), listed=()):
+        self.found = list(found)
+        self.subscriptions = tuple(subscriptions)
+        self._listed = tuple(listed)
+
+    def inventory(self):
+        self.subscriptions = self.subscriptions or self._listed
+        return list(self.found)
+
+
 def fake_cloud(monkeypatch, source):
     asked = []
 
@@ -240,7 +265,8 @@ FLAGS = {
     "network": {"--help", "--format", "--output", "--scope", "--allow-public", "--max-hosts",
                 "--workers"},
     "host": {"--help", "--format", "--output", "--ssh"},
-    "cloud": {"--help", "--format", "--output", "--provider", "--region"},
+    "cloud": {"--help", "--format", "--output", "--provider", "--region", "--project",
+              "--subscription"},
 }
 
 
@@ -810,16 +836,16 @@ def test_a_missing_extra_is_a_message_and_exit_two(monkeypatch, capsys):
     rc, out, err = run(capsys, "cloud", "--provider", "aws")
     assert rc == 2
     assert out == ""
-    assert "pip install php-radar[aws]" in err
+    assert 'pip install "php-radar[aws]"' in err
     assert "Traceback" not in err
 
 
 def test_an_unknown_provider_is_a_message_and_exit_two(monkeypatch, capsys):
     monkeypatch.setattr(cli, "get_cloud_source",
                         functools.partial(real_get_cloud_source, _boto3=None))
-    rc, out, err = run(capsys, "cloud", "--provider", "gcp")
+    rc, out, err = run(capsys, "cloud", "--provider", "bogus")
     assert rc == 2
-    assert "unknown cloud provider 'gcp'" in err
+    assert "unknown cloud provider 'bogus', the choices are: aws, gcp, azure" in err
     assert "Traceback" not in err
 
 
@@ -893,6 +919,197 @@ def test_an_empty_region_is_refused(monkeypatch, capsys):
     rc, out, err = run(capsys, "cloud", "--provider", "aws", "--region", " ")
     assert rc == 2
     assert asked == []
+    assert "a region name cannot be empty" in err
+
+
+# --- cloud: gcp and azure ---
+
+GUID = "00000000-0000-0000-0000-000000000001"
+OTHER_GUID = "00000000-0000-0000-0000-000000000002"
+MIXED_GUID = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d"
+
+
+def test_cloud_reads_the_gcp_project_of_the_credentials_and_prints_it(monkeypatch, capsys):
+    asked = fake_cloud(monkeypatch, FakeGcp(projects=("adc-project",)))
+    rc, out, err = run(capsys, "cloud", "--provider", "gcp")
+    assert rc == 0
+    assert asked == ["gcp"]
+    assert "GCP projects read: adc-project. Only these are covered." in out
+    assert "Repeat --project to read more" in out
+    assert "AWS" not in out
+
+
+def test_project_flags_are_the_projects_the_source_reads_and_one_named_twice_is_read_once(
+        monkeypatch, capsys):
+    source = FakeGcp(projects=("adc-project",))
+    fake_cloud(monkeypatch, source)
+    rc, out, err = run(capsys, "cloud", "--provider", "gcp", "--project", "p1", "--project", "p2",
+                       "--project", " p1 ")
+    assert rc == 0
+    assert source.projects == ("p1", "p2")
+    assert "GCP projects read: p1, p2." in out
+    assert "Repeat --project" not in out
+
+
+def test_a_missing_gcp_project_is_said_plainly(monkeypatch, capsys):
+    gap = Evidence(Source.CLOUD, "gcp appengine", None, Sapi.UNKNOWN,
+                   {"service": "appengine", "kind": "skipped"},
+                   "not inventoried: no GCP project is configured")
+    fake_cloud(monkeypatch, FakeGcp([gap], projects=(None,)))
+    rc, out, err = run(capsys, "cloud", "--provider", "gcp")
+    assert rc == 3
+    assert "no GCP project is configured, so no project was read" in out
+    assert "Pass --project or set GOOGLE_CLOUD_PROJECT" in out
+
+
+def test_gcp_keeps_stdout_a_document_in_json(monkeypatch, capsys):
+    fake_cloud(monkeypatch, FakeGcp(projects=("adc-project",)))
+    rc, out, err = run(capsys, "cloud", "--provider", "gcp", "--format", "json")
+    assert json.loads(out)["assets"] == []
+    assert "GCP projects read: adc-project." in err
+
+
+def test_cloud_reads_the_azure_subscription_it_was_told_to_and_prints_it(monkeypatch, capsys):
+    source = FakeAzure(listed=(OTHER_GUID,))
+    asked = fake_cloud(monkeypatch, source)
+    rc, out, err = run(capsys, "cloud", "--provider", "azure", "--subscription", GUID)
+    assert rc == 0
+    assert asked == ["azure"]
+    assert source.subscriptions == (GUID,)
+    assert f"Azure subscriptions read: {GUID}." in out
+    assert "Repeat --subscription" not in out
+
+
+def test_the_azure_note_names_what_the_source_found_during_the_read(monkeypatch, capsys):
+    # With nothing named the source lists the subscriptions inside inventory(), so a note made
+    # before the read would find none. What it listed is everything the credential can list, and
+    # the note does not offer more.
+    fake_cloud(monkeypatch, FakeAzure(listed=(GUID, OTHER_GUID)))
+    rc, out, err = run(capsys, "cloud", "--provider", "azure")
+    assert rc == 0
+    assert (f"Azure subscriptions read: {GUID}, {OTHER_GUID}. That is every subscription the "
+            "credential can list.") in out
+    assert "Only these are covered" not in out and "Repeat --subscription" not in out
+
+
+def test_a_subscription_the_source_started_with_is_not_called_everything_it_can_list(
+        monkeypatch, capsys):
+    # A default from the environment names one subscription, and the credential can list others.
+    fake_cloud(monkeypatch, FakeAzure(subscriptions=(GUID,), listed=(OTHER_GUID,)))
+    rc, out, err = run(capsys, "cloud", "--provider", "azure")
+    assert rc == 0
+    assert (f"Azure subscriptions read: {GUID}. Only these are covered. "
+            "Repeat --subscription to read more.") in out
+    assert "every subscription the credential can list" not in out
+
+
+def test_azure_keeps_stdout_a_document_in_json(monkeypatch, capsys):
+    fake_cloud(monkeypatch, FakeAzure(listed=(GUID,)))
+    rc, out, err = run(capsys, "cloud", "--provider", "azure", "--format", "json")
+    assert json.loads(out)["assets"] == []
+    assert f"Azure subscriptions read: {GUID}." in err
+
+
+def test_no_azure_subscription_read_is_said_plainly(monkeypatch, capsys):
+    gap = Evidence(Source.CLOUD, "azure subscriptions", None, Sapi.UNKNOWN,
+                   {"service": "subscriptions", "kind": "skipped"},
+                   "not inventoried: no Azure subscription is configured and none could be "
+                   "enumerated")
+    fake_cloud(monkeypatch, FakeAzure([gap]))
+    rc, out, err = run(capsys, "cloud", "--provider", "azure")
+    assert rc == 3
+    assert "no Azure subscription was named, and none could be listed, so none was read" in out
+    assert "Pass --subscription or set AZURE_SUBSCRIPTION_ID" in out
+
+
+def test_a_source_that_reports_no_scope_adds_no_note_and_does_not_crash(monkeypatch, capsys):
+    source = types.SimpleNamespace(subscriptions=None, inventory=lambda: [])
+    fake_cloud(monkeypatch, source)
+    rc, out, err = run(capsys, "cloud", "--provider", "azure")
+    assert rc == 0
+    assert "Azure subscriptions" not in out + err
+
+
+def test_a_subscription_id_is_read_in_lower_case_and_once(monkeypatch, capsys):
+    source = FakeAzure()
+    fake_cloud(monkeypatch, source)
+    rc, out, err = run(capsys, "cloud", "--provider", "azure", "--subscription",
+                       MIXED_GUID.upper(), "--subscription", f" {MIXED_GUID} ")
+    assert source.subscriptions == (MIXED_GUID,)
+    assert f"Azure subscriptions read: {MIXED_GUID}." in out
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t"])
+def test_an_empty_subscription_is_refused_because_it_would_read_them_all(
+        monkeypatch, capsys, value):
+    asked = fake_cloud(monkeypatch, FakeAzure())
+    rc, out, err = run(capsys, "cloud", "--provider", "azure", "--subscription", value)
+    assert rc == 2
+    assert out == ""
+    assert asked == []
+    assert "a subscription id cannot be empty" in err
+    assert "every subscription the credential can list" in err
+
+
+@pytest.mark.parametrize("value", [
+    "Azure for Students", "prod", GUID[:-1], GUID + "0", GUID.replace("-", ""), "{" + GUID + "}",
+    "urn:uuid:" + GUID, "0000000g-0000-0000-0000-000000000001", f"{GUID},{OTHER_GUID}", "*"])
+def test_a_subscription_that_is_no_id_is_refused_before_anything_is_built(
+        monkeypatch, capsys, value):
+    asked = fake_cloud(monkeypatch, FakeAzure())
+    rc, out, err = run(capsys, "cloud", "--provider", "azure", "--subscription", value)
+    assert rc == 2
+    assert out == ""
+    assert asked == []
+    assert "is not a subscription id" in err
+    assert "use its id instead" in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t"])
+def test_an_empty_project_is_refused(monkeypatch, capsys, value):
+    asked = fake_cloud(monkeypatch, FakeGcp())
+    rc, out, err = run(capsys, "cloud", "--provider", "gcp", "--project", value)
+    assert rc == 2
+    assert asked == []
+    assert "a project id cannot be empty" in err
+
+
+@pytest.mark.parametrize("argv, flag, owner", [
+    (["--provider", "gcp", "--region", "us-east-1"], "--region", "aws"),
+    (["--provider", "azure", "--region", "us-east-1"], "--region", "aws"),
+    (["--provider", "aws", "--project", "p"], "--project", "gcp"),
+    (["--provider", "azure", "--project", "p"], "--project", "gcp"),
+    (["--provider", "aws", "--subscription", GUID], "--subscription", "azure"),
+    (["--provider", "gcp", "--subscription", GUID], "--subscription", "azure")])
+def test_a_scope_flag_for_another_provider_is_refused_and_not_ignored(
+        monkeypatch, capsys, argv, flag, owner):
+    # Ignoring it would leave the run wider than the person who typed it meant.
+    asked = fake_cloud(monkeypatch, FakeSource([]))
+    rc, out, err = run(capsys, "cloud", *argv)
+    assert rc == 2
+    assert out == ""
+    assert asked == []
+    assert f"{flag} is for --provider {owner}" in err
+
+
+def test_an_unknown_provider_is_reported_even_when_a_scope_flag_is_given(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "get_cloud_source",
+                        functools.partial(real_get_cloud_source, _boto3=None))
+    rc, out, err = run(capsys, "cloud", "--provider", "bogus", "--region", "us-east-1")
+    assert rc == 2
+    assert "unknown cloud provider 'bogus'" in err
+
+
+def test_the_cloud_help_names_the_three_providers_and_says_what_a_scope_flag_takes(capsys):
+    rc, out, err = run(capsys, "cloud", "--help")
+    text = " ".join(out.split())
+    assert "the cloud to read: aws, gcp, or azure" in text
+    assert "aws: a region to read" in text
+    assert "gcp: a project to read" in text
+    assert "Application Default Credentials" in text
+    assert "azure: a subscription to read, given by its id (a GUID)" in text
+    assert "AZURE_SUBSCRIPTION_ID" in text
 
 
 def test_aws_credentials_in_the_environment_are_never_printed(monkeypatch, capsys):
