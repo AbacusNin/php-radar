@@ -6,22 +6,24 @@ in the PHP runtime. It reads versions and configuration to work out each build, 
 the build against the releases that carry the fix. It never sends anything meant to trigger
 the bug, so it cannot crash a target.
 
-Point it at a repository, a GitHub organization, an AWS account, a range of addresses, or a
-single machine. Every find gets a verdict and a confidence, and the exit code tells a script
-whether anything is exposed.
+Point it at a repository, a GitHub organization, a range of addresses, or a single machine. It
+also reads AWS accounts, Google Cloud projects, and Azure subscriptions. Every find gets a
+verdict and a confidence, and the exit code tells a script whether anything is exposed.
 
 ## Install
 
-Python 3.9 or later. The core uses only the standard library.
+Python 3.10 or later. The core uses only the standard library.
 
 ```
 pip install php-radar
 ```
 
-For the AWS source, add the aws extra:
+For a cloud source, add the extra for its provider:
 
 ```
 pip install "php-radar[aws]"
+pip install "php-radar[gcp]"
+pip install "php-radar[azure]"
 ```
 
 Or install from a clone with `pip install .` (or `pip install ".[aws]"`), and
@@ -30,16 +32,55 @@ Or install from a clone with `pip install .` (or `pip install ".[aws]"`), and
 ## Usage
 
 ```
-php-radar repo PATH                 # a checkout on disk
-php-radar repo --github-org NAME    # every repo in a GitHub org
-php-radar host                      # this machine
-php-radar host --ssh USER@HOST      # a machine over ssh
-php-radar cloud --provider aws      # an AWS account
-php-radar network --scope FILE      # addresses you are cleared to probe
+php-radar repo PATH                                   # a checkout on disk
+php-radar repo --github-org NAME                      # every repo in a GitHub org
+php-radar host                                        # this machine
+php-radar host --ssh USER@HOST                        # a machine over ssh
+php-radar cloud --provider aws                        # an AWS account
+php-radar cloud --provider gcp --project ID           # a Google Cloud project
+php-radar cloud --provider azure --subscription GUID  # an Azure subscription
+php-radar network --scope FILE                        # addresses you are cleared to probe
 ```
 
 Add `--format json` or `--format sarif` for machine-readable output (the default is a
 console table), and `--output FILE` to write the report to a file.
+
+## Cloud accounts
+
+The cloud command lists what an account runs and reports the PHP in it. It makes read calls
+only. Credentials come from each provider's standard chain: the AWS default chain,
+Application Default Credentials for Google Cloud, and DefaultAzureCredential for Azure. No
+flag takes a credential.
+
+| Provider | Reads | Scope flag | Without the flag |
+|---|---|---|---|
+| `aws` | Elastic Beanstalk environments, Lambda functions, ECR images | `--region` | the session's own region |
+| `gcp` | App Engine versions, Cloud Functions, Artifact Registry images | `--project` | the project of the credentials |
+| `azure` | App Service apps, Container Apps, Container Registry images | `--subscription` | `AZURE_SUBSCRIPTION_ID` when it is set, otherwise every subscription the credential can list |
+
+Repeat a flag to read more than one region, project, or subscription. `--project` takes a
+project id. `--subscription` takes a subscription id, which is a GUID.
+
+`AZURE_SUBSCRIPTION_ID` sets the default Azure subscription for a run that passes no
+`--subscription`. Its value has to be a subscription id (a GUID). A blank value, or any other
+value that is not a subscription id, stops the run with exit status 2. That holds even when
+you also pass `--subscription`. A CI job that fills the variable from a secret it does not
+have sends it blank. Reading that as unset would widen the run to every subscription the
+credential can list.
+
+Google Cloud reads use the quota project of the Application Default Credentials. Without
+one, an App Engine Admin API that is turned off can answer not found, the same as a project
+with no application. The run cannot tell the two apart, so it marks that read skipped
+instead of guessing. The result is incomplete, and the run exits 3 when nothing is exposed.
+That holds even for a project that has no App Engine application. To avoid the skip, set a
+quota project with `gcloud auth application-default set-quota-project PROJECT_ID`, or set
+the `GOOGLE_CLOUD_QUOTA_PROJECT` variable.
+
+Both the GCP and Azure sources have now been run read-only against live accounts. Each
+authenticated through its standard chain and read the services above. Where an API was
+turned off, the run marked that read skipped and called the whole result incomplete.
+Neither account held PHP, so grading a real find still rests on the tests and the
+stand-ins they build from the SDKs' published definitions.
 
 ## Verdicts and exit codes
 
@@ -61,8 +102,10 @@ EXPOSED, 2 on a usage or scope error, and 3 when nothing is exposed but a read w
 - **Outside reads are leads.** A banner can be hidden or forged, so a network read always
   grades low and wants a host read to confirm it.
 - **The scope is the authorization boundary.** php-radar reads what you name and nothing else.
-  A network sweep refuses public ranges unless you pass `--allow-public`, rate-limits itself,
-  and prints an authorization notice before it runs. Whether you may scan is on you.
+  The exception is Azure. With neither `--subscription` nor `AZURE_SUBSCRIPTION_ID`, a run
+  reads every subscription the credential can list. A network sweep refuses public ranges
+  unless you pass `--allow-public`, rate-limits itself, and prints an authorization notice
+  before it runs. Whether you may scan is on you.
 - **A patched build still carries application risk.** The fix closes the runtime bug. An
   application's own flaws, such as a file-inclusion sink, are a separate question.
 

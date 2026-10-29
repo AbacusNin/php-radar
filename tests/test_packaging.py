@@ -175,10 +175,74 @@ def test_the_wheel_carries_the_license_and_the_notice(wheel):
     assert "Commons Clause" in notice
 
 
-def test_the_core_needs_nothing_and_the_aws_extra_needs_boto3(wheel):
+# What each extra installs. Left unpinned, as aws always was: whoever installs an extra gets the
+# current release of each SDK.
+EXTRAS = {
+    "aws": ["boto3"],
+    "gcp": ["google-cloud-appengine-admin", "google-cloud-functions",
+            "google-cloud-artifact-registry"],
+    "azure": ["azure-identity", "azure-mgmt-web", "azure-mgmt-appcontainers",
+              "azure-mgmt-containerregistry", "azure-containerregistry",
+              "azure-mgmt-resource-subscriptions"],
+}
+
+
+def test_the_wheel_carries_the_release_version_and_the_python_floor(wheel):
     _, meta = dist_info(wheel)
     assert meta["Name"] == "php-radar"
-    assert meta["Requires-Python"] == ">=3.9"
-    assert meta.get_all("Provides-Extra") == ["aws"]
+    assert meta["Version"] == "0.2.0"
+    # Every extra includes an SDK whose current release needs 3.10, and 3.9 is end of life.
+    # azure-mgmt-resource-subscriptions also has no release that installs on 3.9.
+    assert meta["Requires-Python"] == ">=3.10"
+
+
+def test_the_core_needs_nothing_and_each_extra_names_exactly_its_sdk_packages(wheel):
+    _, meta = dist_info(wheel)
+    assert sorted(meta.get_all("Provides-Extra")) == sorted(EXTRAS)
     requires = [r.replace(" ", "").replace("'", '"') for r in meta.get_all("Requires-Dist") or []]
-    assert requires == ['boto3;extra=="aws"']
+    wanted = [f'{pkg};extra=="{extra}"' for extra, pkgs in EXTRAS.items() for pkg in pkgs]
+    # Equal as lists, so a package beyond these, a version pin, or a requirement that sits outside
+    # every extra fails it.
+    assert sorted(requires) == sorted(wanted)
+
+
+# Refuses every cloud SDK by name, so a machine with one installed answers as a machine with none
+# does. It then builds the source of each provider, which cannot start without its SDK.
+NO_SDK = """
+for name in ("boto3", "botocore", "google", "azure"):
+    sys.modules[name] = None
+import php_radar.sources.cloud.azure, php_radar.sources.cloud.gcp
+from php_radar.sources.cloud import get_cloud_source
+said = {}
+for provider in ("aws", "gcp", "azure"):
+    try:
+        get_cloud_source(provider)
+    except RuntimeError as exc:
+        said[provider] = str(exc)
+print(json.dumps({"file": php_radar.sources.cloud.gcp.__file__, "said": said}))
+"""
+
+
+def test_the_wheel_imports_the_cloud_modules_with_no_sdk_installed(wheel):
+    for module in ("_common", "aws", "azure", "gcp"):
+        assert f"php_radar/sources/cloud/{module}.py" in wheel.names
+    done = run_installed(wheel, NO_SDK)
+    assert done.returncode == 0, done.stderr
+    facts = json.loads(done.stdout)
+    # The wheel's own copy answered, so the import did not come from the checkout.
+    assert Path(facts["file"]).resolve().is_relative_to(wheel.installed.resolve())
+
+
+def test_a_provider_without_its_sdk_says_to_install_an_extra_the_wheel_declares(wheel):
+    done = run_installed(wheel, NO_SDK)
+    assert done.returncode == 0, done.stderr
+    said = json.loads(done.stdout)["said"]
+    # Each refused with a RuntimeError. An ImportError would have ended the run above.
+    assert sorted(said) == ["aws", "azure", "gcp"]
+    # The hint quotes the extra, because zsh reads the brackets as a glob and refuses the command.
+    named = {provider: message.partition('pip install "php-radar[')[2].partition(']"')[0]
+             for provider, message in said.items()}
+    assert named == {"aws": "aws", "gcp": "gcp", "azure": "azure"}
+    # A hint is only true when the wheel has the extra it names.
+    _, meta = dist_info(wheel)
+    assert set(named.values()) <= set(meta.get_all("Provides-Extra"))

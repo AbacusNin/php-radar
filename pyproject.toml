@@ -4,13 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "php-radar"
-version = "0.1.1"
+version = "0.2.0"
 description = "Finds PHP installs and grades them against PHP2Shell (CVE-2026-109618, CVE-2026-109619) without triggering the bug."
 readme = "README.md"
 license = "LicenseRef-Apache-2.0-with-Commons-Clause"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "AbacusNin" }]
-requires-python = ">=3.9"
+# Every extra includes an SDK whose current release needs 3.10, and 3.9 is end of life.
+# azure-mgmt-resource-subscriptions also has no release that installs on 3.9.
+requires-python = ">=3.10"
 keywords = ["php", "php2shell", "vulnerability", "scanner", "security", "inventory", "sarif"]
 # No License classifier: the license expression above replaces it, and setuptools refuses both.
 classifiers = [
@@ -24,11 +26,24 @@ classifiers = [
     "Topic :: Security",
     "Topic :: System :: Systems Administration",
 ]
-# Standard library only. boto3 is the one exception and lives in the aws extra.
+# Standard library only. The SDKs of each cloud live in an extra named for that provider.
 dependencies = []
 
 [project.optional-dependencies]
 aws = ["boto3"]
+gcp = [
+    "google-cloud-appengine-admin",
+    "google-cloud-functions",
+    "google-cloud-artifact-registry",
+]
+azure = [
+    "azure-identity",
+    "azure-mgmt-web",
+    "azure-mgmt-appcontainers",
+    "azure-mgmt-containerregistry",
+    "azure-containerregistry",
+    "azure-mgmt-resource-subscriptions",
+]
 
 [project.urls]
 Homepage = "https://github.com/AbacusNin/php-radar"
