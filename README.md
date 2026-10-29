@@ -68,4 +68,10 @@ EXPOSED, 2 on a usage or scope error, and 3 when nothing is exposed but a read w
 
 ## License
 
-Apache-2.0. See LICENSE and NOTICE.
+Apache License 2.0 with the Commons Clause. Anyone, including a company or a government
+agency, may use, change, and share php-radar free of charge, for example to check its own
+systems. Nobody may sell it, host it for a fee, or sell a product or service, including
+consulting or support, whose value comes entirely or substantially from it. This makes it
+source-available rather than OSI open source. See LICENSE and NOTICE.
+
+I'm not accepting outside contributions.

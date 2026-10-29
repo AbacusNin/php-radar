@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "php-radar"
-version = "0.1.0"
+version = "0.1.1"
 description = "Finds PHP installs and grades them against PHP2Shell (CVE-2026-109618, CVE-2026-109619) without triggering the bug."
 readme = "README.md"
-license = "Apache-2.0"
+license = "LicenseRef-Apache-2.0-with-Commons-Clause"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "AbacusNin" }]
 requires-python = ">=3.9"

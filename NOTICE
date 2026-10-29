@@ -1,4 +1,11 @@
 php-radar
-Copyright 2026 AbacusNin
+Copyright 2026 Abacus
 
-Licensed under the Apache License, Version 2.0.
+Licensed under the Apache License, Version 2.0, with the Commons Clause
+License Condition v1.0. See LICENSE.
+
+In plain terms: anyone, including a company or a government agency, may use,
+change, and share this software free of charge, for example to check its own
+systems. Nobody may sell it, host it for a fee, or sell a product or service,
+including consulting or support, whose value comes entirely or substantially
+from it. This summary does not replace LICENSE.

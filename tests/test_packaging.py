@@ -162,14 +162,17 @@ def test_python_dash_m_runs_from_the_wheel_too(wheel):
 
 def test_the_wheel_carries_the_license_and_the_notice(wheel):
     where, meta = dist_info(wheel)
-    assert meta["License-Expression"] == "Apache-2.0"
+    assert meta["License-Expression"] == "LicenseRef-Apache-2.0-with-Commons-Clause"
     assert sorted(meta.get_all("License-File")) == ["LICENSE", "NOTICE"]
     license_text = (where / "licenses" / "LICENSE").read_text(encoding="utf-8")
+    assert license_text.startswith('"Commons Clause" License Condition v1.0')
+    assert "Software: php-radar" in license_text
     assert "Apache License" in license_text
     assert "Version 2.0, January 2004" in license_text
     notice = (where / "licenses" / "NOTICE").read_text(encoding="utf-8")
     assert notice.startswith("php-radar")
-    assert "Copyright" in notice
+    assert "Copyright 2026 Abacus\n" in notice
+    assert "Commons Clause" in notice
 
 
 def test_the_core_needs_nothing_and_the_aws_extra_needs_boto3(wheel):
